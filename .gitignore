@@ -1,0 +1,7 @@
+Tokens.txt
+AgentCreds.txt
+agentcreds.py
+*.pyc
+*.log
+*.csv
+**/__pycache__/
