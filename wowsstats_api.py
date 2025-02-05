@@ -2,6 +2,7 @@
 
 import pymysql
 import json
+import time
 
 from pydantic import TypeAdapter
 from typing import Union,List,Literal
@@ -17,6 +18,18 @@ from config import GameResult, CBGame, Clan, CBMapStats, environment, Ship, CBTe
 
 import urllib3
 
+#todo: IP filter middleware on PUTs
+#todo: logger logging
+#todo: performance management middleware
+'''
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    start_time = time.perf_counter()
+    response = await call_next(request)
+    process_time = time.perf_counter() - start_time
+    response.headers["X-Process-Time"] = str(process_time)
+    return response
+'''
 
 '''
     Maps
@@ -25,7 +38,7 @@ import urllib3
 
 http = urllib3.PoolManager()
 
-tags_metadata = [
+TagsMetadata = [
     {
         "name": "Clans",
         "description": "Data pertaining to see and specifically tracked clans.",
@@ -44,7 +57,7 @@ tags_metadata = [
     }
 ]
 
-exceptions_map = {
+ExceptionsMap = {
     400 : "Bad Request",
     401 : "Unauthorised",
     403 : "Forbidden",
@@ -59,6 +72,9 @@ RealmMap = {
     "sg":"asia"
     }
 
+IPWhitelist = environment['dev']['ip_whitelist']
+appID = environment['dev']['appid']
+
 '''
     API
 
@@ -67,10 +83,9 @@ RealmMap = {
 app = FastAPI(
     title="WoWS Stats",
     version="0.1.n",
-    openapi_tags=tags_metadata)
+    openapi_tags=TagsMetadata)
 
 def CreateConn():
-    creds = environment["dev"]
     conn = pymysql.connect(host=creds["IP"],
                            user=creds["user"],
                            password=creds["password"],
@@ -78,14 +93,32 @@ def CreateConn():
                            cursorclass=pymysql.cursors.DictCursor)
     return(conn)
 
-appID = environment['dev']['appid']
+
 
 def HandleExcept(num : int, detail):
     raise HTTPException(
             status_code = num,
             detail = str(detail),
-            headers = {"status": exceptions_map.get(num,"Unknown Code")},
+            headers = {"status": ExceptionsMap.get(num,"Unknown Code")},
         )
+
+'''
+    Middlewares
+'''
+
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    ip = str(request.client.host)
+    if ip not in IPWhitelist:
+        data = {
+            'message': f'IP {ip} is not allowed to access this resource.'
+        }
+        return JSONResponse(status_code=400, content=data)
+    start_time = time.perf_counter()
+    response = await call_next(request)
+    process_time = time.perf_counter() - start_time
+    response.headers["X-Process-Time"] = str(process_time)
+    return response
 
 '''
     Endpoints
@@ -471,7 +504,7 @@ def WG_ClanBattle(tag : str):
 @app.get("/wg/randomstats", response_model = List[PlayerRandomStats], tags=["WG API"])
 def WG_PlayerRandomStats(PlayerID: int, Realm: Literal['eu','us','sg','ru']):
 
-    Realm = Realm
+    Realm = RealmMap[Realm]
 
     GameTypes = ['pvp','rank_solo','pvp_solo']
 
@@ -517,6 +550,45 @@ def WG_PlayerRandomStats(PlayerID: int, Realm: Literal['eu','us','sg','ru']):
 
     headers = {"status":"OK", "records":str(len(ret))}
     return JSONResponse(status_code=200, content=jsonable_encoder(ret), headers=headers)
+
+# ClanRating
+@app.get("/wg/clanratings", response_model=List[ClanRating], tags=["WG API"])
+def WG_ClanRating(ClanID: int, Realm: str):
+
+    Realm = RealmMap[Realm]
+
+    url = f"https://clans.worldofwarships.{Realm}/api/clanbase/{ClanID}/claninfo/"
+
+    try:
+        req = http.request("GET",url)
+        content = req.json()
+    except:
+        HandleExcept(400, ("API Error at : " + url))
+
+    if len(content) == 0:
+        HandleExcept(204, "API Returned no data for {PlayerID}")
+    ret = []
+    content = content["clanview"]["wows_ladder"]["ratings"]
+    
+    for rating in content:
+        ret.append(ClanRating(
+            ClanID = ClanID,
+            Battles = rating["battles_count"],
+            League = rating["league"],
+            MaxPublicRating = rating["max_public_rating"],
+            Wins = rating["wins_count"],
+            Season = rating["season_number"],
+            Rating = rating["public_rating"],
+            TeamAB = rating["team_number"],
+            IsMaxPosition = rating["is_best_season_rating"]
+        ))
+
+
+    headers = {"status":"OK", "records":str(len(ret))}
+    return JSONResponse(status_code=200, content=jsonable_encoder(ret), headers=headers)
+
+# LiveDamage
+# CBPlayerStats
 
 # sql = f"CALL usp_UpdatePlayerRandomStats({self.playerID},{self.shipID},{self.Games},{self.WR},{self.Surv},{self.Frags},{self.Dam},{self.Spot},{self.Tank},{self.XP},'{self.MatchType}')"
 # config.dbcon.execute(f"CALL usp_UpdatePlayers({self.playerID},{self.clanID},'{self.Nickname}','{self.Realm}',{self.isHidden})")

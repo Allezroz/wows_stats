@@ -154,7 +154,7 @@ class ClanRating(BaseModel):
     Season: int
     Rating: int
     TeamAB: int
-
+    IsMaxPosition: bool
 
 class CBPlayerStats(BaseModel):
     PlayerID: int
